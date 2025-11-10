@@ -15,7 +15,46 @@ import json
 import argparse
 from tqdm import tqdm
 import itertools
+import torch
+import torch.nn.functional as F
+import numpy as np
+from pathlib import Path
+import json
+import argparse
+from tqdm import tqdm
+import itertools
 
+# --- SAFE GLOBALS FOR TORCH LOAD ---
+import torch.serialization
+import typing
+import collections
+from omegaconf import DictConfig, ListConfig
+from omegaconf.base import ContainerMetadata, Metadata
+from omegaconf.nodes import AnyNode
+
+torch.serialization.add_safe_globals([
+    # OmegaConf / config objects
+    DictConfig,
+    ListConfig,
+    ContainerMetadata,
+    Metadata,
+    AnyNode,
+    typing.Any,
+
+    # Builtins that can appear in the checkpoint
+    dict,
+    list,
+    int,
+    float,
+    str,
+    bool,
+    tuple,
+    type(None),
+
+    # collections
+    collections.defaultdict,
+])
+# --- end safe globals block ---
 from train import MultimodalFusionModule
 from data import create_dataloaders, simulate_missing_modalities
 from uncertainty import CalibrationMetrics
@@ -315,11 +354,23 @@ def main():
     metrics, (preds, labels, confidences) = evaluate_model(
         model, test_loader, args.device, return_predictions=True
     )
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    np.save(out_dir / f"preds_{config.model.fusion_type}.npy", preds.numpy())
+    np.save(out_dir / f"labels_{config.model.fusion_type}.npy", labels.numpy())
+    np.save(out_dir / f"confidences_{config.model.fusion_type}.npy", confidences.numpy())
     
     print(f"\nTest Accuracy: {metrics['accuracy']:.4f}")
     print(f"Test F1 (macro): {metrics['f1_macro']:.4f}")
     print(f"Test Loss: {metrics['loss']:.4f}")
-    
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    np.save(output_dir / "y_true.npy", labels.numpy())
+    np.save(output_dir / "y_pred.npy", preds.numpy())
+    np.save(output_dir / "confidences.npy", confidences.numpy())
+    print(f"\nSaved prediction arrays to: {output_dir}")
     # Calibration metrics
     print("\nComputing calibration metrics...")
     ece = CalibrationMetrics.expected_calibration_error(
