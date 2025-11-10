@@ -1,0 +1,17 @@
+{
+  "dataset": "pamap2",
+  "modality_subsets": {
+    "all": {
+      "accuracy": 0.93,
+      "f1_macro": 0.92
+    },
+    "imu_only": {
+      "accuracy": 0.91,
+      "f1_macro": 0.9004
+    },
+    "heart_only": {
+      "accuracy": 0.1,
+      "f1_macro": 0.01
+    }
+  }
+}
