@@ -40,14 +40,34 @@ class MCDropoutUncertainty(nn.Module):
             mean_logits: (batch_size, num_classes) - mean prediction
             uncertainty: (batch_size,) - prediction uncertainty (variance)
         """
-        # TODO: Implement MC Dropout
-        # Steps:
-        #   1. Enable dropout in model (model.train())
-        #   2. Run num_samples forward passes
-        #   3. Compute mean and variance of predictions
-        #   4. Return mean prediction and uncertainty
-        
-        raise NotImplementedError("Implement MC Dropout uncertainty")
+        # 1. Remember current mode and enable dropout (train mode)
+        was_training = self.model.training
+        self.model.train()
+
+        logits_samples = []
+
+        # 2. Run num_samples stochastic forward passes
+        with torch.no_grad():
+            for _ in range(self.num_samples):
+                logits = self.model(*args, **kwargs)  # (B, C)
+                logits_samples.append(logits.unsqueeze(0))  # (1, B, C)
+
+        # Restore original mode
+        if not was_training:
+            self.model.eval()
+
+        # Stack: (S, B, C)
+        logits_samples = torch.cat(logits_samples, dim=0)
+
+        # 3. Mean and variance of predictions
+        mean_logits = logits_samples.mean(dim=0)  # (B, C)
+
+        # Use variance of predicted probabilities as uncertainty
+        probs_samples = F.softmax(logits_samples, dim=-1)  # (S, B, C)
+        var_probs = probs_samples.var(dim=0)               # (B, C)
+        uncertainty = var_probs.mean(dim=-1)               # (B,)
+
+        return mean_logits, uncertainty
 
 
 class CalibrationMetrics:
@@ -71,26 +91,41 @@ class CalibrationMetrics:
         Compute Expected Calibration Error (ECE).
         
         ECE = Σ (|bin_accuracy - bin_confidence|) * (bin_size / total_size)
-        
-        Args:
-            confidences: (N,) - predicted confidence scores [0, 1]
-            predictions: (N,) - predicted class indices
-            labels: (N,) - ground truth class indices
-            num_bins: Number of bins for calibration
-            
-        Returns:
-            ece: Expected Calibration Error (lower is better)
         """
-        # TODO: Implement ECE calculation
-        # Steps:
-        #   1. Bin predictions by confidence level
-        #   2. For each bin, compute accuracy and average confidence
-        #   3. Compute weighted difference |accuracy - confidence|
-        #   4. Return ECE
-        
-        # Hint: Use np.histogram or torch.histc to bin confidences
-        
-        raise NotImplementedError("Implement ECE calculation")
+        confidences = confidences.detach().cpu()
+        predictions = predictions.detach().cpu()
+        labels = labels.detach().cpu()
+
+        N = confidences.numel()
+        ece = torch.tensor(0.0)
+
+        # Bin boundaries: [0,1], equal-width bins
+        bin_edges = torch.linspace(0.0, 1.0, steps=num_bins + 1)
+
+        for i in range(num_bins):
+            lower = bin_edges[i]
+            upper = bin_edges[i + 1]
+
+            # Include left edge, exclude right edge (except last bin)
+            if i == num_bins - 1:
+                in_bin = (confidences >= lower) & (confidences <= upper)
+            else:
+                in_bin = (confidences >= lower) & (confidences < upper)
+
+            bin_size = in_bin.sum().item()
+            if bin_size == 0:
+                continue
+
+            bin_confidences = confidences[in_bin]
+            bin_predictions = predictions[in_bin]
+            bin_labels = labels[in_bin]
+
+            avg_confidence = bin_confidences.mean()
+            accuracy = (bin_predictions == bin_labels).float().mean()
+
+            ece += (bin_size / N) * torch.abs(accuracy - avg_confidence)
+
+        return float(ece.item())
     
     @staticmethod
     def maximum_calibration_error(
@@ -103,14 +138,40 @@ class CalibrationMetrics:
         Compute Maximum Calibration Error (MCE).
         
         MCE = max_bin |bin_accuracy - bin_confidence|
-        
-        Returns:
-            mce: Maximum calibration error across bins
         """
-        # TODO: Implement MCE
-        # Similar to ECE but take max instead of average
-        
-        raise NotImplementedError("Implement MCE calculation")
+        confidences = confidences.detach().cpu()
+        predictions = predictions.detach().cpu()
+        labels = labels.detach().cpu()
+
+        mce = torch.tensor(0.0)
+
+        bin_edges = torch.linspace(0.0, 1.0, steps=num_bins + 1)
+
+        for i in range(num_bins):
+            lower = bin_edges[i]
+            upper = bin_edges[i + 1]
+
+            if i == num_bins - 1:
+                in_bin = (confidences >= lower) & (confidences <= upper)
+            else:
+                in_bin = (confidences >= lower) & (confidences < upper)
+
+            bin_size = in_bin.sum().item()
+            if bin_size == 0:
+                continue
+
+            bin_confidences = confidences[in_bin]
+            bin_predictions = predictions[in_bin]
+            bin_labels = labels[in_bin]
+
+            avg_confidence = bin_confidences.mean()
+            accuracy = (bin_predictions == bin_labels).float().mean()
+
+            gap = torch.abs(accuracy - avg_confidence)
+            if gap > mce:
+                mce = gap
+
+        return float(mce.item())
     
     @staticmethod
     def negative_log_likelihood(
@@ -121,18 +182,11 @@ class CalibrationMetrics:
         Compute average Negative Log-Likelihood (NLL).
         
         NLL = -log P(y_true | x)
-        
-        Args:
-            logits: (N, num_classes) - predicted logits
-            labels: (N,) - ground truth labels
-            
-        Returns:
-            nll: Average negative log-likelihood
         """
-        # TODO: Implement NLL
-        # Hint: Use F.cross_entropy which computes -log(softmax(logits)[label])
-        
-        raise NotImplementedError("Implement NLL calculation")
+        logits = logits.detach()
+        labels = labels.detach()
+        nll = F.cross_entropy(logits, labels, reduction='mean')
+        return float(nll.item())
     
     @staticmethod
     def reliability_diagram(
@@ -144,29 +198,84 @@ class CalibrationMetrics:
     ) -> None:
         """
         Plot reliability diagram showing calibration.
-        
-        X-axis: Predicted confidence
-        Y-axis: Actual accuracy
-        Perfect calibration: y = x (diagonal line)
-        
-        Args:
-            confidences: (N,) - confidence scores
-            predictions: (N,) - predicted classes
-            labels: (N,) - ground truth
-            num_bins: Number of bins
-            save_path: Optional path to save plot
         """
         import matplotlib.pyplot as plt
-        
-        # TODO: Implement reliability diagram
-        # Steps:
-        #   1. Bin predictions by confidence
-        #   2. Compute accuracy per bin
-        #   3. Plot bar chart: confidence vs accuracy
-        #   4. Add diagonal line for perfect calibration
-        #   5. Add ECE to plot
-        
-        raise NotImplementedError("Implement reliability diagram")
+
+        confidences = np.asarray(confidences)
+        predictions = np.asarray(predictions)
+        labels = np.asarray(labels)
+
+        N = len(confidences)
+        bin_edges = np.linspace(0.0, 1.0, num_bins + 1)
+
+        bin_accs = []
+        bin_confs = []
+        bin_counts = []
+
+        for i in range(num_bins):
+            lower = bin_edges[i]
+            upper = bin_edges[i + 1]
+
+            if i == num_bins - 1:
+                in_bin = (confidences >= lower) & (confidences <= upper)
+            else:
+                in_bin = (confidences >= lower) & (confidences < upper)
+
+            count = in_bin.sum()
+            if count == 0:
+                bin_accs.append(0.0)
+                bin_confs.append(0.0)
+                bin_counts.append(0)
+                continue
+
+            bin_conf = confidences[in_bin].mean()
+            bin_acc = (predictions[in_bin] == labels[in_bin]).mean()
+
+            bin_accs.append(bin_acc)
+            bin_confs.append(bin_conf)
+            bin_counts.append(count)
+
+        bin_accs = np.asarray(bin_accs)
+        bin_confs = np.asarray(bin_confs)
+        bin_counts = np.asarray(bin_counts)
+
+        # Compute ECE for annotation
+        # reuse torch implementation
+        ece = CalibrationMetrics.expected_calibration_error(
+            torch.from_numpy(confidences),
+            torch.from_numpy(predictions),
+            torch.from_numpy(labels),
+            num_bins=num_bins,
+        )
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(6, 6))
+
+        # Bar plot: predicted confidence (x) vs accuracy (height)
+        bin_width = 1.0 / num_bins
+        ax.bar(
+            bin_edges[:-1] + bin_width / 2.0,
+            bin_accs,
+            width=bin_width,
+            edgecolor='black',
+            align='center',
+            alpha=0.7,
+        )
+
+        # Perfect calibration line
+        ax.plot([0, 1], [0, 1], linestyle='--')
+
+        ax.set_xlabel('Confidence')
+        ax.set_ylabel('Accuracy')
+        ax.set_title(f'Reliability Diagram (ECE = {ece:.4f})')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.grid(True, linestyle='--', alpha=0.3)
+
+        if save_path is not None:
+            plt.savefig(save_path, bbox_inches='tight')
+        plt.close(fig)
 
 
 class UncertaintyWeightedFusion(nn.Module):
@@ -205,15 +314,52 @@ class UncertaintyWeightedFusion(nn.Module):
             fused_logits: (batch_size, num_classes) - weighted fusion
             fusion_weights: (batch_size, num_modalities) - used weights
         """
-        # TODO: Implement uncertainty-weighted fusion
-        # Steps:
-        #   1. Compute inverse uncertainty weights: w_i = 1/(σ_i + ε)
-        #   2. Normalize weights to sum to 1
-        #   3. Apply modality mask (zero weight for missing modalities)
-        #   4. Fuse predictions: Σ w_i * pred_i
-        #   5. Return fused predictions and weights
-        
-        raise NotImplementedError("Implement uncertainty-weighted fusion")
+        # Assume the mask's modality order matches keys order
+        modality_names = list(modality_predictions.keys())
+        batch_size = next(iter(modality_predictions.values())).shape[0]
+        num_modalities = len(modality_names)
+
+        device = next(iter(modality_predictions.values())).device
+        modality_mask = modality_mask.to(device=device, dtype=torch.float32)
+
+        # 1. Compute inverse uncertainty weights: w_i = 1 / (σ_i + ε)
+        #    Shape for each: (B,)
+        weights_list = []
+        for i, name in enumerate(modality_names):
+            sigma = modality_uncertainties[name].to(device)  # (B,)
+            w = 1.0 / (sigma + self.epsilon)                 # (B,)
+            # apply availability mask
+            mask_i = modality_mask[:, i]                     # (B,)
+            w = w * mask_i
+            weights_list.append(w.unsqueeze(1))              # (B,1)
+
+        weights = torch.cat(weights_list, dim=1)  # (B, M)
+
+        # 2. Normalize weights to sum to 1
+        weight_sums = weights.sum(dim=1, keepdim=True)  # (B,1)
+        # Avoid division by zero: if all weights are 0 for a sample, keep them uniform
+        zero_mask = (weight_sums == 0.0)
+        if zero_mask.any():
+            # Set uniform weights for those samples across available modalities
+            # For simplicity, just set equal weights across all modalities
+            weights[zero_mask.expand_as(weights)] = 1.0
+            weight_sums = weights.sum(dim=1, keepdim=True)
+
+        fusion_weights = weights / weight_sums  # (B, M)
+
+        # 3. Fuse predictions: Σ w_i * pred_i
+        num_classes = next(iter(modality_predictions.values())).shape[1]
+        fused_logits = torch.zeros(
+            batch_size, num_classes, device=device,
+            dtype=next(iter(modality_predictions.values())).dtype
+        )
+
+        for i, name in enumerate(modality_names):
+            logits_i = modality_predictions[name].to(device)  # (B,C)
+            w_i = fusion_weights[:, i].unsqueeze(1)           # (B,1)
+            fused_logits = fused_logits + w_i * logits_i
+
+        return fused_logits, fusion_weights
 
 
 class TemperatureScaling(nn.Module):
@@ -258,13 +404,30 @@ class TemperatureScaling(nn.Module):
             lr: Learning rate
             max_iter: Maximum optimization iterations
         """
-        # TODO: Implement temperature calibration
-        # Steps:
-        #   1. Initialize temperature = 1.0
-        #   2. Optimize temperature to minimize NLL on validation set
-        #   3. Use LBFGS or Adam optimizer
-        
-        raise NotImplementedError("Implement temperature calibration")
+        self.train()
+        self.temperature.data.fill_(1.0)
+
+        logits = logits.detach()
+        labels = labels.detach()
+        device = logits.device
+        self.to(device)
+
+        # Use LBFGS as in the original paper, or Adam; we'll do LBFGS.
+        optimizer = torch.optim.LBFGS(
+            [self.temperature],
+            lr=lr,
+            max_iter=max_iter
+        )
+
+        def _closure():
+            optimizer.zero_grad()
+            scaled_logits = self.forward(logits)
+            loss = F.cross_entropy(scaled_logits, labels)
+            loss.backward()
+            return loss
+
+        optimizer.step(_closure)
+        self.eval()
 
 
 class EnsembleUncertainty:
@@ -294,29 +457,44 @@ class EnsembleUncertainty:
             inputs: Model inputs
             
         Returns:
-            mean_predictions: (batch_size, num_classes) - average prediction
-            uncertainty: (batch_size,) - prediction variance
+            mean_predictions: (batch_size, num_classes) - average prediction probs
+            uncertainty: (batch_size,) - prediction variance (across ensemble)
         """
-        # TODO: Implement ensemble prediction
-        # Steps:
-        #   1. Get predictions from all models
-        #   2. Compute mean prediction
-        #   3. Compute variance as uncertainty measure
-        #   4. Return mean and uncertainty
-        
-        raise NotImplementedError("Implement ensemble uncertainty")
+        device = inputs.device
+        all_probs = []
+
+        with torch.no_grad():
+            for model in self.models:
+                model.eval()
+                model.to(device)
+                logits = model(inputs)               # (B,C)
+                probs = F.softmax(logits, dim=-1)    # (B,C)
+                all_probs.append(probs.unsqueeze(0))  # (1,B,C)
+
+        # (M,B,C)
+        all_probs = torch.cat(all_probs, dim=0)
+
+        # Mean prediction
+        mean_probs = all_probs.mean(dim=0)  # (B,C)
+
+        # Variance across models
+        var_probs = all_probs.var(dim=0)    # (B,C)
+        uncertainty = var_probs.mean(dim=-1)  # (B,)
+
+        return mean_probs, uncertainty
 
 
 def compute_calibration_metrics(
     model: nn.Module,
     dataloader: torch.utils.data.DataLoader,
-    device: str = 'cpu'
+    device: str = 'cpu',
+    num_bins: int = 15
 ) -> Dict[str, float]:
     """
     Compute all calibration metrics on a dataset.
     
     Args:
-        model: Trained model
+        model: Trained model (single-input classification model)
         dataloader: Test/validation dataloader
         device: Device to run on
         
@@ -324,34 +502,50 @@ def compute_calibration_metrics(
         metrics: Dict with ECE, MCE, NLL, accuracy
     """
     model.eval()
+    model.to(device)
+
     all_confidences = []
     all_predictions = []
     all_labels = []
-    
+    all_logits = []
+
     with torch.no_grad():
         for batch in dataloader:
+            # Assumes batch = (inputs, labels)
             inputs, labels = batch
-            inputs, labels = inputs.to(device), labels.to(device)
-            
-            logits = model(inputs)
-            probs = F.softmax(logits, dim=1)
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            logits = model(inputs)                  # (B,C)
+            probs = F.softmax(logits, dim=1)        # (B,C)
             confidences, predictions = torch.max(probs, dim=1)
-            
+
+            all_logits.append(logits.cpu())
             all_confidences.append(confidences.cpu())
             all_predictions.append(predictions.cpu())
             all_labels.append(labels.cpu())
     
+    logits = torch.cat(all_logits)
     confidences = torch.cat(all_confidences)
     predictions = torch.cat(all_predictions)
     labels = torch.cat(all_labels)
-    
-    # TODO: Compute and return all metrics
-    # - ECE
-    # - MCE
-    # - NLL
-    # - Accuracy
-    
-    raise NotImplementedError("Implement calibration metrics computation")
+
+    # Metrics
+    ece = CalibrationMetrics.expected_calibration_error(
+        confidences, predictions, labels, num_bins=num_bins
+    )
+    mce = CalibrationMetrics.maximum_calibration_error(
+        confidences, predictions, labels, num_bins=num_bins
+    )
+    nll = CalibrationMetrics.negative_log_likelihood(logits, labels)
+    accuracy = float((predictions == labels).float().mean().item())
+
+    return {
+        "ece": ece,
+        "mce": mce,
+        "nll": nll,
+        "accuracy": accuracy,
+    }
 
 
 if __name__ == '__main__':
@@ -362,7 +556,7 @@ if __name__ == '__main__':
     num_samples = 1000
     num_classes = 10
     
-    # Well-calibrated predictions
+    # Well-calibrated predictions (random logits)
     logits = torch.randn(num_samples, num_classes)
     labels = torch.randint(0, num_classes, (num_samples,))
     probs = F.softmax(logits, dim=1)
@@ -388,4 +582,3 @@ if __name__ == '__main__':
         print("✓ Reliability diagram created")
     except NotImplementedError:
         print("✗ Reliability diagram not implemented yet")
-
