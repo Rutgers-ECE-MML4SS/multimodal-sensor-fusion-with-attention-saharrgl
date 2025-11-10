@@ -405,7 +405,8 @@ def build_encoder(
             output_dim=output_dim,
             **encoder_config
         )
-    elif modality in ['imu_hand', 'imu_chest', 'imu_ankle', 'heart_rate']:
+    #elif modality in ['imu_hand', 'imu_chest', 'imu_ankle', 'heart_rate']:
+    elif modality in ['imu_hand','imu_chest','heart_rate']:
         return SequenceEncoder(
             input_dim=input_dim,
             output_dim=output_dim,
