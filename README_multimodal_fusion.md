@@ -108,5 +108,4 @@ Outputs: `analysis/attention_viz.png`
 
 ## 📚 Citation
 
-**Dataset:**  
-A. Reiss and D. Stricker, *Introducing a New Benchmarked Dataset for Activity Monitoring*, ISWC, 2012.  
+**Dataset:**  (https://archive.ics.uci.edu/ml/datasets/pamap2+physical+activity+monitoring)
