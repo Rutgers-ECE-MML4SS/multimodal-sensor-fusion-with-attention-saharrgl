@@ -102,7 +102,7 @@ Outputs: `analysis/attention_viz.png`
 ## ⚠️ Limitations
 
 - Heart-rate interpolation required due to low frequency.  
-- CPU training ≈ 25 min per model.
+- CPU training ≈ 30 min per model.
 
 ---
 
